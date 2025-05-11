@@ -29,7 +29,7 @@ validate_python() {
 	PYTHON=$(find_python)
 	if [[ -z $PYTHON ]]; then
 		echo could not find python3.9!
-		exit
+		exit 1
 	fi
 }
 
@@ -40,19 +40,23 @@ if [[ $1 = "env" ]]; then
 	fi
 	if [[ -z $(which pip) ]]; then
 		echo could not find pip! activate env!
-		exit
+		exit 1
 	fi
 	if [[ -e requirements.txt ]]; then
 		echoval pip install -r requirements.txt
 	else
 		echo no requirements.txt! get it!
-		exit
+		exit 1
 	fi
 
 elif [[ $1 = "download" ]]; then
 	echo downloading!
 	if [[ ! -d data ]]; then
 		mkdir data
+	fi
+	if [[ -z $(which kaggle) ]]; then
+		echo no kaggle! install and start env!
+		exit 1
 	fi
 	echoval kaggle competitions download -c yo-no-soy-un-bot -p data
 	echoval cd data
