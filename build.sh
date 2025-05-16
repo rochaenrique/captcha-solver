@@ -48,7 +48,6 @@ if [[ $1 = "env" ]]; then
 		echo no requirements.txt! get it!
 		exit 1
 	fi
-
 elif [[ $1 = "download" ]]; then
 	echo downloading!
 	if [[ ! -d data ]]; then
