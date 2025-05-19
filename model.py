@@ -1,4 +1,6 @@
 import os
+import gc
+import cv2
 import string
 from glob import glob
 import numpy as np
@@ -29,14 +31,24 @@ if len(sys.argv) < 2:
 
 submit_file = sys.argv[1]
 
-SEED = 1337
+SEED = 6969 
 NUM_DIGITS = 6
+BATCH_SIZE = 64
+SHUFFLE = 10_000
 CHARS = string.digits + string.ascii_lowercase + string.ascii_uppercase
 char_to_idx = { c: i for i, c in enumerate(CHARS)}
 idx_to_char = { i: c for c, i in char_to_idx.items()}
 
+tf.config.optimizer.set_jit(True)
+np.random.seed(SEED)
+
 def encode_label(label):
-    return [char_to_idx[c] for c in str(label)]
+    s = str(label)
+    if len(s) < NUM_DIGITS: 
+        s = s.rjust(NUM_DIGITS, '0')
+    elif len(s) > NUM_DIGITS:
+        s = s[:NUM_DIGITS]
+    return [char_to_idx[c] for c in s]
 
 def decode_label(encoded):
     return ''.join([idx_to_char[i] for i in encoded])
@@ -55,16 +67,24 @@ def try_gpu():
         print("No GPUs detected")
 
 def load_clean_imgs(img_dir, cache_path, id_to_label=None):
-    if os.path.exists(cache_path):
-        print(f'Loading cached from \'{cache_path}\'')
-        data = np.load(cache_path, allow_pickle=True)
-        return data['X'], data['y'], data['ids'].tolist()
-    else:
-        print(f'Cache not found, loading...')
+    if not os.path.exists(cache_path):
+        print('Cache not found, loading...')
         X, y, ids = load_imgs(img_dir, id_to_label)
+        print('Cleaning data')
         X = clean(X)
-        np.savez(cache_path, X=X, y=y, ids=np.array(ids))
-    return X, y, ids 
+        y = np.array(y, dtype=np.int32) if id_to_label is not None else None
+
+        np.savez(cache_path.strip('.npz'),
+                X=X, 
+                y=y,
+                ids=np.array(ids))
+
+        del X, y, ids
+        gc.collect()
+
+    print(f'Loading \'{cache_path}\' in mmap mode')
+    data = np.load(cache_path, mmap_mode='r', allow_pickle=True)
+    return data['X'], data['y'], data['ids']
 
 def load_imgs(img_dir, id_to_label=None):
     skipped = 0
@@ -93,28 +113,21 @@ def load_imgs(img_dir, id_to_label=None):
             y.append(encode_label(id_to_label[img_id]))
 
     print(f'Skipped {skipped} images')
-    return np.array(X), np.array(y), ids
+    return X, y, ids
 
 def clean(X):
     clean = []
     for img in X:
         img = img.squeeze()
         img = cv2.fastNlMeansDenoising(img, None, h=15, templateWindowSize=7, searchWindowSize=21)
-        img = cv2.GaussianBlur(img, (3,3), 0)
-        img = cv2.adaptiveThreshold(img, 255, 
-                                    cv2.ADAPTIVE_THRESH_MEAN_C,
-                                    cv2.THRESH_BINARY_INV, 
-                                    11, 2
-                                    )
+#        img = cv2.GaussianBlur(img, (3,3), 0)
+#        img = cv2.adaptiveThreshold(img, 255, 
+#                                    cv2.ADAPTIVE_THRESH_MEAN_C,
+#                                    cv2.THRESH_BINARY_INV, 
+#                                    11, 2
+#                                    )
         clean.append(img)
     return np.expand_dims(np.array(clean), -1).astype('float32') / 255.
-
-def split(X, y, test_size=0.2):
-    return train_test_split(X, y, test_size=test_size, random_state=SEED)
-
-def prep_labels(y):
-    y = np.stack(np.array(y))
-    return [to_categorical(y[:, i], num_classes=len(CHARS)) for i in range(NUM_DIGITS)]
 
 def build(input_shape=(80, 200, 1), num_classes=len(CHARS)):
     inputs = Input(shape=input_shape)
@@ -130,10 +143,40 @@ def build(input_shape=(80, 200, 1), num_classes=len(CHARS)):
 
     model.compile(
         optimizer='adam',
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
+        loss=['sparse_categorical_crossentropy'] * NUM_DIGITS,
+        metrics=['accuracy'] * NUM_DIGITS
     )
     return model
+
+def make_dataset(X, y, indices, shuffle=True):
+    print('Making dataset')
+
+    idx = np.array(indices, dtype=np.int32)
+    N = idx.shape[0]
+
+    def generator(idx): 
+        for i in idx:
+            yield (X[i], *y[i])
+
+    output_sig = (
+            tf.TensorSpec(shape=X.shape[1:], dtype=tf.float32),
+            *[tf.TensorSpec(shape=(), dtype=tf.int32) for _ in range(NUM_DIGITS)],
+            )
+
+    ds = tf.data.Dataset.from_generator(
+            lambda: generator(idx), 
+            output_signature=output_sig
+            )
+    if shuffle:
+        ds = ds.shuffle(len(idx), seed=SEED)
+
+    ds = ds.batch(BATCH_SIZE)
+
+    ds = ds.map(
+            lambda x, *y: (x, y),
+            num_parallel_calls=tf.data.AUTOTUNE
+            )
+    return ds.prefetch(tf.data.AUTOTUNE)
 
 if __name__ == '__main__':
     with Profile(f'Trying gpus'):
@@ -141,7 +184,10 @@ if __name__ == '__main__':
     
     train_dir = 'data/train/train'
     train_labels_path = 'data/train.csv'
-    train_cache = 'build/train_cache.npy'
+    train_cache = 'build/train_cache.npz'
+
+    test_dir = 'data/test/test'
+    test_cache = 'build/test_cache.npz'
 
     with Profile(f'Loading train labels \'{train_labels_path}\''):
         label_df = pd.read_csv(train_labels_path)
@@ -150,17 +196,19 @@ if __name__ == '__main__':
     with Profile(f'Loading train data'):
         X_train, y_train, ids = load_clean_imgs(train_dir, train_cache, id_to_label)
 
-    test_dir = 'data/test/test'
-    test_cache = 'build/test_cache.npy'
     with Profile('Loading test data'):
         X_test, _, test_ids = load_clean_imgs(test_dir, test_cache)
 
-    with Profile('Split train test'):
-        X_tr, X_val, y_tr, y_val = split(X_train, y_train)
+    with Profile('Created data batches'):
+        N = X_train.shape[0]
+        perm = np.random.permutation(N)
+        split_at = int(0.8 * N)
+        train_idx, val_idx = perm[:split_at], perm[split_at:]
+        train_ds = make_dataset(X_train, y_train, train_idx)
+        val_ds = make_dataset(X_train, y_train, val_idx, False)
 
-    with Profile('Build model'):
-        input_shape = X_tr.shape[1:]
-        model = build(input_shape, num_classes)
+    with Profile('Building model'):
+        model = build(X_train.shape[1:])
 
     best_model = 'build/best.h5'
     with Profile('Setting callbacks'):
@@ -171,12 +219,12 @@ if __name__ == '__main__':
             monitor='val_accuracy', patience=5, restore_best_weights=True
         )
 
-    with Profile('Building model'):
+    with Profile('Fitting'):
+        print('Let the games begin!')
         model.fit(
-            X_tr, y_tr,
-            validation_data=(X_val, y_val),
+            train_ds,
+            validation_data=val_ds,
             epochs=50,
-            batch_size=64,
             callbacks=[point, earlystop]
         )
 
@@ -184,7 +232,8 @@ if __name__ == '__main__':
         model.load_weights(best_model)
 
     with Profile('Predict'):
-        predictions = model.predict(X_test)
+        test_ds = tf.data.Dataset.from_tensor_slices(X_test).batch(BATCH_SIZE)
+        predictions = model.predict(test_ds)
         results = []
         for pred in zip(*predictions):
             results.append(''.join([idx_to_char[np.argmax(dl)] for dl in pred]))
@@ -194,3 +243,4 @@ if __name__ == '__main__':
         subm.to_csv(submit_file, index=False)
 
     print("-------- DONE! --------")
+
