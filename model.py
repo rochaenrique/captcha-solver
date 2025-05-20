@@ -31,11 +31,12 @@ if len(sys.argv) < 2:
 
 submit_file = sys.argv[1]
 
-SEED = 6969 
+SEED = 69
 NUM_DIGITS = 6
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 SHUFFLE = 1_000
-CHARS = string.digits + string.ascii_lowercase + string.ascii_uppercase
+EPOCHS = 10
+CHARS = string.digits
 char_to_idx = { c: i for i, c in enumerate(CHARS)}
 idx_to_char = { i: c for c, i in char_to_idx.items()}
 
@@ -101,7 +102,6 @@ def load_imgs(img_dir, id_to_label=None):
             skipped += 1
             continue
 
-        # Load image as grayscale and convert to array
         img_path = os.path.join(img_dir, filename)
         img = image.load_img(img_path, color_mode='grayscale')
         img_array = image.img_to_array(img).astype(np.uint8)
@@ -120,21 +120,30 @@ def clean(X):
     for img in X:
         img = img.squeeze()
         img = cv2.fastNlMeansDenoising(img, None, h=15, templateWindowSize=7, searchWindowSize=21)
-#        img = cv2.GaussianBlur(img, (3,3), 0)
-#        img = cv2.adaptiveThreshold(img, 255, 
-#                                    cv2.ADAPTIVE_THRESH_MEAN_C,
-#                                    cv2.THRESH_BINARY_INV, 
-#                                    11, 2
-#                                    )
+        img = cv2.GaussianBlur(img, (3,3), 0)
+        img = cv2.adaptiveThreshold(img, 255, 
+                                    cv2.ADAPTIVE_THRESH_MEAN_C,
+                                    cv2.THRESH_BINARY_INV, 
+                                    11, 2
+                                    )
         clean.append(img)
     return np.expand_dims(np.array(clean), -1).astype('float32') / 255.
 
 def build(input_shape=(80, 200, 1), num_classes=len(CHARS)):
     inputs = Input(shape=input_shape)
+    
     x = Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
     x = MaxPooling2D((2, 2))(x)
+    
     x = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D((2, 2))(x)
+    
+    x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D((2, 2))(x)
+    
+    x = Conv2D(256, (3, 3), activation='relu', padding='same')(x)
+    x = MaxPooling2D((2, 2))(x)
+    
     x = Flatten()(x)
     x = Dense(512, activation='relu')(x)
 
@@ -196,9 +205,6 @@ if __name__ == '__main__':
     with Profile(f'Loading train data'):
         X_train, y_train, ids = load_clean_imgs(train_dir, train_cache, id_to_label)
 
-    with Profile('Loading test data'):
-        X_test, _, test_ids = load_clean_imgs(test_dir, test_cache)
-
     with Profile('Created data batches'):
         N = X_train.shape[0]
         perm = np.random.permutation(N)
@@ -210,26 +216,25 @@ if __name__ == '__main__':
     with Profile('Building model'):
         model = build(X_train.shape[1:])
 
-    best_model = 'build/best.h5'
-    with Profile('Setting callbacks'):
-        point = ModelCheckpoint(
-            best_model, save_best_only=True, monitor='val_accuracy', mode='max'
-        )
-        earlystop = EarlyStopping(
-            monitor='val_accuracy', patience=5, restore_best_weights=True
-        )
-
+    model_weights = 'build/mode.keras'
+    if os.path.exists(model_weights):
+        with Profile('Loading weights'):
+            model.load_weights(model_weights)
+                
     with Profile('Fitting'):
         print('Let the games begin!')
         model.fit(
             train_ds,
             validation_data=val_ds,
-            epochs=20,
-            callbacks=[point, earlystop]
+            epochs=EPOCHS,
+            callbacks=[
+                ModelCheckpoint(model_weights),
+                EarlyStopping()
+            ]
         )
 
-    with Profile('Loading weights'):
-        model.load_weights(best_model)
+    with Profile('Loading test data'):
+        X_test, _, test_ids = load_clean_imgs(test_dir, test_cache)
 
     with Profile('Predict'):
         test_ds = tf.data.Dataset.from_tensor_slices(X_test).batch(BATCH_SIZE)
@@ -243,6 +248,3 @@ if __name__ == '__main__':
         subm.to_csv(submit_file, index=False)
 
     print("-------- DONE! --------")
-
-
-

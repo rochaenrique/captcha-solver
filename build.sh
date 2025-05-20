@@ -17,7 +17,5 @@ echo training!
 SUBMIT="build/submit_$(date '+%d-%m_%H-%M-%S').csv"
 echoval python3 model.py $SUBMIT
 
-if [[ $? && $1 = "submit" ]]; then
-    echo submiting!
-    echoval kaggle competitions submit -c yo-no-soy-un-bot -f $SUBMIT -m $(basename $SUBMIT)
-fi
+echo submiting!
+echoval kaggle competitions submit -c yo-no-soy-un-bot -f $SUBMIT -m $(basename $SUBMIT)
