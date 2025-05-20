@@ -33,9 +33,9 @@ submit_file = sys.argv[1]
 
 SEED = 69
 NUM_DIGITS = 6
-BATCH_SIZE = 16
+BATCH_SIZE = 64
 SHUFFLE = 1_000
-EPOCHS = 10
+EPOCHS = 30
 CHARS = string.digits
 char_to_idx = { c: i for i, c in enumerate(CHARS)}
 idx_to_char = { i: c for c, i in char_to_idx.items()}
@@ -141,9 +141,6 @@ def build(input_shape=(80, 200, 1), num_classes=len(CHARS)):
     x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
     x = MaxPooling2D((2, 2))(x)
     
-    x = Conv2D(256, (3, 3), activation='relu', padding='same')(x)
-    x = MaxPooling2D((2, 2))(x)
-    
     x = Flatten()(x)
     x = Dense(512, activation='relu')(x)
 
@@ -195,9 +192,6 @@ if __name__ == '__main__':
     train_labels_path = 'data/train.csv'
     train_cache = 'build/train_cache.npz'
 
-    test_dir = 'data/test/test'
-    test_cache = 'build/test_cache.npz'
-
     with Profile(f'Loading train labels \'{train_labels_path}\''):
         label_df = pd.read_csv(train_labels_path)
         id_to_label = dict(zip(label_df['Id'], label_df['Label']))
@@ -216,7 +210,7 @@ if __name__ == '__main__':
     with Profile('Building model'):
         model = build(X_train.shape[1:])
 
-    model_weights = 'build/mode.keras'
+    model_weights = 'build/model.keras'
     if os.path.exists(model_weights):
         with Profile('Loading weights'):
             model.load_weights(model_weights)
@@ -232,6 +226,9 @@ if __name__ == '__main__':
                 EarlyStopping()
             ]
         )
+        
+    test_dir = 'data/test/test'
+    test_cache = 'build/test_cache.npz'
 
     with Profile('Loading test data'):
         X_test, _, test_ids = load_clean_imgs(test_dir, test_cache)
@@ -244,7 +241,7 @@ if __name__ == '__main__':
             results.append(''.join([idx_to_char[np.argmax(dl)] for dl in pred]))
 
     with Profile('Create submission'):
-        subm = pd.DataFrame({'Id': test_ids, 'Label': results})
+        subm = pd.DataFrame({'Label': results, 'Id': test_ids})
         subm.to_csv(submit_file, index=False)
 
     print("-------- DONE! --------")
