@@ -34,7 +34,7 @@ submit_file = sys.argv[1]
 SEED = 6969 
 NUM_DIGITS = 6
 BATCH_SIZE = 64
-SHUFFLE = 10_000
+SHUFFLE = 1_000
 CHARS = string.digits + string.ascii_lowercase + string.ascii_uppercase
 char_to_idx = { c: i for i, c in enumerate(CHARS)}
 idx_to_char = { i: c for c, i in char_to_idx.items()}
@@ -224,7 +224,7 @@ if __name__ == '__main__':
         model.fit(
             train_ds,
             validation_data=val_ds,
-            epochs=50,
+            epochs=20,
             callbacks=[point, earlystop]
         )
 
@@ -243,4 +243,6 @@ if __name__ == '__main__':
         subm.to_csv(submit_file, index=False)
 
     print("-------- DONE! --------")
+
+
 
